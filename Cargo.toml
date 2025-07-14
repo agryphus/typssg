@@ -1,0 +1,14 @@
+[package]
+name = "typssg-render"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+typst = "0.13.1"
+typst-as-lib = { version = "0.14.4", features = ["typst-html", "typst-kit-fonts", "typst-kit-embed-fonts"] }
+typst-html = "0.13.1"
+typst-pdf = "0.13.1"
+typst-svg = "0.13.1"
+
