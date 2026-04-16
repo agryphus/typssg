@@ -1,28 +1,47 @@
 use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstEngine};
-use typst::{ecow::EcoString, html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode}};
+use typst::{ecow::EcoString};
+use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode};
 use std::fs;
 use std::env;
-use std::path::Path;
+use std::path::PathBuf;
+use clap::Parser;
 
-static COMMON: &str = include_str!("../common.typ");
+#[derive(Parser)]
+struct Args {
+    #[arg(default_value = ".")]
+    dir: PathBuf,
+
+    #[arg(long)]
+    prepend: Option<PathBuf>,
+}
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-
     match env::current_dir() {
         Ok(path) => println!("Current working directory: {}", path.display()),
         Err(e) => eprintln!("Error getting current directory: {}", e),
     }
 
-    let file_path = Path::new(args.get(1).unwrap());
-    let article_dir: &str = file_path.parent().unwrap().to_str().unwrap();
-    let template_file = format!("{}/article.typ", article_dir);
-    let output = format!("{}/article.html", article_dir);
-    let outline_file = format!("{}/outline.html", article_dir);
+    let args = Args::parse();
+
+    let article_dir = args.dir;
+
+    let template_file = article_dir.join("article.typ");
+    let output = article_dir.join("article.html");
+    let outline_file = article_dir.join("outline.html");
+
+    let prepend_content = if let Some(prepend_file) = args.prepend {
+        fs::read_to_string(&prepend_file).unwrap_or_else(|_| {
+            panic!("Could not find prepend file {}.", prepend_file.to_str().unwrap());
+        })
+    } else {
+        fs::read_to_string(article_dir.join("prepend.typ")).unwrap_or_default()
+    };
 
     let mut template: EcoString = EcoString::new();
-    template.push_str(COMMON);
-    template.push_str(fs::read_to_string(template_file).unwrap().as_str());
+    template.push_str(&prepend_content);
+    template.push_str(fs::read_to_string(&template_file).unwrap_or_else(|_| {
+        panic!("Could not find file {}.", &template_file.to_str().unwrap());
+    }).as_str());
 
     let template = TypstEngine::builder()
         .main_file(template.to_string())
@@ -131,7 +150,8 @@ fn parse(elem: &mut HtmlElement, outline: &mut EcoString, curr_level: &mut u32) 
         elem.attrs.push(HtmlAttr::intern("id").unwrap(), slug);
         return;
     }
-    for child in &mut elem.children {
+
+    for child in elem.children.make_mut().iter_mut() {
         match child {
             HtmlNode::Element(e) => {parse(e, outline, curr_level)}
             _ => {}
