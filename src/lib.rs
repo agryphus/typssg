@@ -11,8 +11,8 @@ pub fn compile_article(
     prepend: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
-    let template_file = article_dir.join("article.typ");
-    let output = article_dir.join("article.html");
+    let template_file = article_dir.join("index.typ");
+    let output = article_dir.join("index.html");
     let outline_file = article_dir.join("outline.html");
 
     let prepend_content = if let Some(prepend_file) = prepend {
