@@ -7,8 +7,8 @@ use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode};
 
 
 pub fn compile_article(
-    article_dir: PathBuf,
-    prepend: Option<PathBuf>,
+    article_dir: &PathBuf,
+    prepend: &Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let template_file = article_dir.join("index.typ");

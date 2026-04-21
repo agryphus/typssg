@@ -21,7 +21,7 @@ fn main() {
 
     let args = Args::parse();
 
-    if let Err(e) = compile_article(args.dir, args.prepend) {
+    if let Err(e) = compile_article(&args.dir, &args.prepend) {
         eprintln!("{e}");
         std::process::exit(1);
     }
