@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use typssg::{compile_article, compile_all};
+use log::{info, error};
 
 #[derive(Parser)]
 struct Args {
@@ -17,9 +18,11 @@ struct Args {
 }
 
 fn main() {
+    env_logger::init();
+
     match env::current_dir() {
-        Ok(path) => println!("Current working directory: {}", path.display()),
-        Err(e) => eprintln!("Error getting current directory: {}", e),
+        Ok(path) => info!("Starting in working directory: {}", path.display()),
+        Err(e) => error!("Error getting current directory: {}", e),
     }
 
     let args = Args::parse();
@@ -31,7 +34,7 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("{e}");
+        error!("{e}");
         std::process::exit(1);
     }
 }

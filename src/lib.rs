@@ -4,12 +4,14 @@ use std::path::PathBuf;
 use typst::ecow::EcoString;
 use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstEngine};
 use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode};
+use log::info;
 
 
 pub fn compile_article(
     article_dir: &PathBuf,
     prepend: &Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("compiling {} ...", article_dir.display());
 
     let template_file = article_dir.join("index.typ");
     let output = article_dir.join("index.html");
@@ -183,7 +185,6 @@ pub fn compile_all(
             compile_all(&path, prepend)?;
         } else if path.file_name().is_some_and(|n| n == "index.typ") {
             let dir = path.parent().unwrap().to_path_buf();
-            println!("compiling {}", dir.display());
             compile_article(&dir, prepend)?;
         }
     }
