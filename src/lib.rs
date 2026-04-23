@@ -170,3 +170,23 @@ fn parse_outline(elem: &mut HtmlElement, outline: &mut EcoString, curr_level: &m
         }
     }
 }
+
+pub fn compile_all(
+    root_dir: &PathBuf,
+    prepend: &Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for entry in fs::read_dir(root_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            compile_all(&path, prepend)?;
+        } else if path.file_name().is_some_and(|n| n == "index.typ") {
+            let dir = path.parent().unwrap().to_path_buf();
+            println!("compiling {}", dir.display());
+            compile_article(&dir, prepend)?;
+        }
+    }
+
+    Ok(())
+}
