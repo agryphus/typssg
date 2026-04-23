@@ -14,7 +14,7 @@ jobs:
 
       - name: Build with Nix
         run: |
-          nix build .#default --out-link result
+          /run/current-system/sw/bin/nix build .#default --out-link result
           cp result/bin/typssg ./typssg-linux-x86_64
 
       - name: Create Release and Upload Binary
