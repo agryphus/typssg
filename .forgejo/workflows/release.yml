@@ -1,0 +1,37 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: native
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with Nix
+        run: |
+          nix build .#default --out-link result
+          cp result/bin/typssg ./typssg-linux-x86_64
+
+      - name: Create Release and Upload Binary
+        run: |
+          TAG="${{ github.ref_name }}"
+          BINARY="typssg-linux-x86_64"
+          REPO="${{ github.repository }}"
+          API="https://your-forgejo-instance.com/api/v1"
+          TOKEN="${{ secrets.RELEASE_TOKEN }}"
+
+          RELEASE_ID=$(curl -s -X POST "$API/repos/$REPO/releases" \
+            -H "Authorization: token $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\": \"$TAG\", \"name\": \"$TAG\", \"draft\": false}" \
+            | jq -r '.id')
+
+          curl -s -X POST "$API/repos/$REPO/releases/$RELEASE_ID/assets?name=$BINARY" \
+            -H "Authorization: token $TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary @$BINARY
