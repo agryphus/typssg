@@ -15,6 +15,9 @@ struct Args {
 
     #[arg(short)]
     recursive: bool,
+
+    #[arg(long)]
+    include_title_in_outline: bool,
 }
 
 fn main() {
@@ -28,9 +31,9 @@ fn main() {
     let args = Args::parse();
 
     let result = if args.recursive {
-        compile_all(&args.dir, &args.prepend)
+        compile_all(&args.dir, &args.prepend, args.include_title_in_outline)
     } else {
-        compile_article(&args.dir, &args.prepend)
+        compile_article(&args.dir, &args.prepend, args.include_title_in_outline)
     };
 
     if let Err(e) = result {

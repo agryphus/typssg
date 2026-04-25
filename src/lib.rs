@@ -10,6 +10,7 @@ use log::info;
 pub fn compile_article(
     article_dir: &PathBuf,
     prepend: &Option<PathBuf>,
+    include_title: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("compiling {} ...", article_dir.display());
 
@@ -56,7 +57,7 @@ pub fn compile_article(
 
     let mut outline = EcoString::new();
     let mut curr_level = 1;
-    parse_outline(&mut doc.root, &mut outline, &mut curr_level);
+    parse_outline(&mut doc.root, &mut outline, &mut curr_level, include_title);
     for i in (1..curr_level).rev() {
         outline.push_str("  ".repeat(i as usize - 1).as_str());
         outline.push_str("</ul>\n");
@@ -108,11 +109,20 @@ pub fn compile_article(
     Ok(())
 }
 
-fn parse_outline(elem: &mut HtmlElement, outline: &mut EcoString, curr_level: &mut u32) {
+fn parse_outline(
+    elem: &mut HtmlElement,
+    outline: &mut EcoString,
+    curr_level: &mut u32,
+    include_title: bool,
+) {
     if matches!(
         elem.tag.to_string().as_str(),
         "<h2>" | "<h3>" | "<h4>" | "<h5>" | "<h6>"
     ) {
+        if !include_title && elem.tag.to_string().as_str() == "<h2>" {
+            return;
+        }
+
         let mut header_text = EcoString::new();
 
         for child in &elem.children {
@@ -167,7 +177,7 @@ fn parse_outline(elem: &mut HtmlElement, outline: &mut EcoString, curr_level: &m
 
     for child in elem.children.make_mut().iter_mut() {
         match child {
-            HtmlNode::Element(e) => parse_outline(e, outline, curr_level),
+            HtmlNode::Element(e) => parse_outline(e, outline, curr_level, include_title),
             _ => {}
         }
     }
@@ -176,16 +186,17 @@ fn parse_outline(elem: &mut HtmlElement, outline: &mut EcoString, curr_level: &m
 pub fn compile_all(
     root_dir: &PathBuf,
     prepend: &Option<PathBuf>,
+    include_title_in_outline: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for entry in fs::read_dir(root_dir)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
-            compile_all(&path, prepend)?;
+            compile_all(&path, prepend, include_title_in_outline)?;
         } else if path.file_name().is_some_and(|n| n == "index.typ") {
             let dir = path.parent().unwrap().to_path_buf();
-            compile_article(&dir, prepend)?;
+            compile_article(&dir, prepend, include_title_in_outline)?;
         }
     }
 
