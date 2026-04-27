@@ -1,5 +1,9 @@
+mod plugin;
+
 use std::fs;
 use std::path::PathBuf;
+
+pub use plugin::{concat_plugin_sources, embedded_prepend_source, list_embedded_plugin_ids};
 
 use typst::ecow::EcoString;
 use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstEngine};
@@ -10,6 +14,7 @@ use log::info;
 pub fn compile_article(
     article_dir: &PathBuf,
     prepend: &Option<PathBuf>,
+    plugins: &[impl AsRef<str>],
     include_title: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("compiling {} ...", article_dir.display());
@@ -18,7 +23,9 @@ pub fn compile_article(
     let output = article_dir.join("index.html");
     let outline_file = article_dir.join("outline.html");
 
-    let prepend_content = if let Some(prepend_file) = prepend {
+    let plugin_block = concat_plugin_sources(plugins)?;
+
+    let user_prepend = if let Some(prepend_file) = prepend {
         fs::read_to_string(&prepend_file).map_err(|e| {
             format!(
                 "could not read prepend file {}: {e}",
@@ -30,7 +37,11 @@ pub fn compile_article(
     };
 
     let mut template: EcoString = EcoString::new();
-    template.push_str(&prepend_content);
+    template.push_str(&plugin_block);
+    if !plugin_block.is_empty() && !user_prepend.is_empty() {
+        template.push('\n');
+    }
+    template.push_str(&user_prepend);
     template.push_str(
         &fs::read_to_string(&template_file).map_err(|e| {
             format!(
@@ -186,6 +197,7 @@ fn parse_outline(
 pub fn compile_all(
     root_dir: &PathBuf,
     prepend: &Option<PathBuf>,
+    plugins: &[impl AsRef<str>],
     include_title_in_outline: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for entry in fs::read_dir(root_dir)? {
@@ -193,10 +205,10 @@ pub fn compile_all(
         let path = entry.path();
 
         if path.is_dir() {
-            compile_all(&path, prepend, include_title_in_outline)?;
+            compile_all(&path, prepend, plugins, include_title_in_outline)?;
         } else if path.file_name().is_some_and(|n| n == "index.typ") {
             let dir = path.parent().unwrap().to_path_buf();
-            compile_article(&dir, prepend, include_title_in_outline)?;
+            compile_article(&dir, prepend, plugins, include_title_in_outline)?;
         }
     }
 
