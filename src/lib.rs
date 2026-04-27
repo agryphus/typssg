@@ -1,14 +1,70 @@
 mod plugin;
 
+use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
 pub use plugin::{concat_plugin_sources, embedded_prepend_source, list_embedded_plugin_ids};
 
 use typst::ecow::EcoString;
-use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstEngine};
+use typst::syntax::Source;
+use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstAsLibError, TypstEngine};
 use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode};
 use log::info;
+
+fn format_typst_compile_error(
+    err: TypstAsLibError,
+    full_source: &str,
+    index_byte_start: usize,
+    index_source: &str,
+) -> std::io::Error {
+    let report = match err {
+        TypstAsLibError::TypstSource(diagnostics) if !diagnostics.is_empty() => {
+            let combined = Source::detached(full_source);
+            let index_only = Source::detached(index_source);
+            let index_end = index_byte_start.saturating_add(index_source.len());
+            let mut out = String::from("Typst compile failed:\n");
+            for d in diagnostics.iter() {
+                let msg = d.message.as_str();
+                if let Some(range) = combined.range(d.span) {
+                    let byte = range.start;
+                    if byte >= index_byte_start && byte < index_end {
+                        let rel = byte - index_byte_start;
+                        if let Some((line, col)) = index_only.lines().byte_to_line_column(rel) {
+                            let _ = writeln!(
+                                &mut out,
+                                "  index.typ:{}:{}: {}",
+                                line + 1,
+                                col + 1,
+                                msg
+                            );
+                        } else {
+                            let _ = writeln!(&mut out, "  {msg}");
+                        }
+                    } else if let Some((line, col)) = combined.lines().byte_to_line_column(byte) {
+                        let _ = writeln!(
+                            &mut out,
+                            "  (preamble) line {}:{}: {}",
+                            line + 1,
+                            col + 1,
+                            msg
+                        );
+                    } else {
+                        let _ = writeln!(&mut out, "  {msg}");
+                    }
+                } else {
+                    let _ = writeln!(&mut out, "  {msg}");
+                }
+                for hint in d.hints.iter() {
+                    let _ = writeln!(&mut out, "    hint: {}", hint.as_str());
+                }
+            }
+            out
+        }
+        other => format!("typst compile failed: {other}"),
+    };
+    std::io::Error::new(std::io::ErrorKind::Other, report)
+}
 
 
 pub fn compile_article(
@@ -36,23 +92,26 @@ pub fn compile_article(
         fs::read_to_string(article_dir.join("prepend.typ")).unwrap_or_default()
     };
 
+    let index_source = fs::read_to_string(&template_file).map_err(|e| {
+        format!(
+            "could not read template {}: {e}",
+            template_file.display()
+        )
+    })?;
+
     let mut template: EcoString = EcoString::new();
     template.push_str(&plugin_block);
     if !plugin_block.is_empty() && !user_prepend.is_empty() {
         template.push('\n');
     }
     template.push_str(&user_prepend);
-    template.push_str(
-        &fs::read_to_string(&template_file).map_err(|e| {
-            format!(
-                "could not read template {}: {e}",
-                template_file.display()
-            )
-        })?,
-    );
+    let index_byte_start = template.len();
+    template.push_str(&index_source);
+
+    let full_source_str = template.to_string();
 
     let engine = TypstEngine::builder()
-        .main_file(template.to_string())
+        .main_file(full_source_str.clone())
         .search_fonts_with(
             TypstKitFontOptions::default()
                 .include_system_fonts(false)
@@ -64,7 +123,7 @@ pub fn compile_article(
     let mut doc: HtmlDocument = engine
         .compile()
         .output
-        .map_err(|e| format!("typst compile failed: {e}"))?;
+        .map_err(|e| format_typst_compile_error(e, &full_source_str, index_byte_start, &index_source))?;
 
     let mut outline = EcoString::new();
     let mut curr_level = 1;
