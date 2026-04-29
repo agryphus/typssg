@@ -126,10 +126,24 @@ pub fn compile_article(
         .map_err(|e| format_typst_compile_error(e, &full_source_str, index_byte_start, &index_source))?;
 
     let mut outline = EcoString::new();
-    let mut curr_level = 1;
-    parse_outline(&mut doc.root, &mut outline, &mut curr_level, include_title);
-    for i in (1..curr_level).rev() {
-        outline.push_str("  ".repeat(i as usize - 1).as_str());
+    let mut curr_level = 1u32;
+    let mut ul_depth = 0u32;
+    let mut title_h2_pending = !include_title;
+    let mut first_outline_heading = true;
+    parse_outline(
+        &mut doc.root,
+        &mut outline,
+        &mut curr_level,
+        &mut ul_depth,
+        include_title,
+        &mut title_h2_pending,
+        &mut first_outline_heading,
+    );
+    // `ul_depth` counts open `<ul>` tags; it can diverge from `curr_level - 1` when the first
+    // outline heading uses lazy depth (skip title). Always drain by `ul_depth`, not `curr_level`.
+    while ul_depth > 0 {
+        ul_depth -= 1;
+        outline.push_str("  ".repeat(ul_depth as usize).as_str());
         outline.push_str("</ul>\n");
     }
     fs::write(&outline_file, outline.as_bytes()).map_err(|e| {
@@ -179,19 +193,50 @@ pub fn compile_article(
     Ok(())
 }
 
+fn heading_level_from_tag(tag: &str) -> Option<u32> {
+    match tag {
+        "<h2>" => Some(2),
+        "<h3>" => Some(3),
+        "<h4>" => Some(4),
+        "<h5>" => Some(5),
+        "<h6>" => Some(6),
+        _ => None,
+    }
+}
+
 fn parse_outline(
     elem: &mut HtmlElement,
     outline: &mut EcoString,
     curr_level: &mut u32,
+    ul_depth: &mut u32,
     include_title: bool,
+    title_h2_pending: &mut bool,
+    first_outline_heading: &mut bool,
 ) {
-    if matches!(
-        elem.tag.to_string().as_str(),
-        "<h2>" | "<h3>" | "<h4>" | "<h5>" | "<h6>"
-    ) {
-        if !include_title && elem.tag.to_string().as_str() == "<h2>" {
-            return;
+    let tag = elem.tag.to_string();
+    let tag_ref = tag.as_str();
+
+    if let Some(level) = heading_level_from_tag(tag_ref) {
+        if !include_title && *title_h2_pending {
+            *title_h2_pending = false;
+            if tag_ref == "<h2>" {
+                for child in elem.children.make_mut().iter_mut() {
+                    if let HtmlNode::Element(e) = child {
+                        parse_outline(
+                            e,
+                            outline,
+                            curr_level,
+                            ul_depth,
+                            include_title,
+                            title_h2_pending,
+                            first_outline_heading,
+                        );
+                    }
+                }
+                return;
+            }
         }
+        *title_h2_pending = false;
 
         let mut header_text = EcoString::new();
 
@@ -218,21 +263,26 @@ fn parse_outline(
             .trim_matches('-')
             .replace("--", "-");
 
-        let level: u32 = elem.tag.to_string().chars().nth(2).unwrap() as u32 - '0' as u32;
+        if *first_outline_heading {
+            *first_outline_heading = false;
+            *curr_level = level.saturating_sub(1);
+        }
 
         while level > *curr_level {
-            *curr_level += 1;
-            outline.push_str("  ".repeat(*curr_level as usize - 2).as_str());
+            outline.push_str("  ".repeat(*ul_depth as usize).as_str());
             outline.push_str("<ul>\n");
+            *ul_depth += 1;
+            *curr_level += 1;
         }
-        while level < *curr_level {
-            outline.push_str("  ".repeat(*curr_level as usize - 2).as_str());
-            outline.push_str("</ul>\n");
+        while level < *curr_level && *ul_depth > 0 {
             *curr_level -= 1;
+            *ul_depth -= 1;
+            outline.push_str("  ".repeat(*ul_depth as usize).as_str());
+            outline.push_str("</ul>\n");
         }
         *curr_level = level;
 
-        outline.push_str("  ".repeat(*curr_level as usize - 1).as_str());
+        outline.push_str("  ".repeat(*ul_depth as usize).as_str());
         outline.push_str(
             format!(
                 "<li><a href=\"#{}\">{}</a></li>\n",
@@ -247,7 +297,17 @@ fn parse_outline(
 
     for child in elem.children.make_mut().iter_mut() {
         match child {
-            HtmlNode::Element(e) => parse_outline(e, outline, curr_level, include_title),
+            HtmlNode::Element(e) => {
+                parse_outline(
+                    e,
+                    outline,
+                    curr_level,
+                    ul_depth,
+                    include_title,
+                    title_h2_pending,
+                    first_outline_heading,
+                );
+            }
             _ => {}
         }
     }
