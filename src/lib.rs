@@ -6,11 +6,11 @@ use std::path::PathBuf;
 
 pub use plugin::{concat_plugin_sources, embedded_prepend_source, list_embedded_plugin_ids};
 
+use log::info;
 use typst::ecow::EcoString;
 use typst::syntax::Source;
-use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstAsLibError, TypstEngine};
+use typst_as_lib::{TypstAsLibError, TypstEngine, typst_kit_options::TypstKitFontOptions};
 use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode};
-use log::info;
 
 fn format_typst_compile_error(
     err: TypstAsLibError,
@@ -31,13 +31,8 @@ fn format_typst_compile_error(
                     if byte >= index_byte_start && byte < index_end {
                         let rel = byte - index_byte_start;
                         if let Some((line, col)) = index_only.lines().byte_to_line_column(rel) {
-                            let _ = writeln!(
-                                &mut out,
-                                "  index.typ:{}:{}: {}",
-                                line + 1,
-                                col + 1,
-                                msg
-                            );
+                            let _ =
+                                writeln!(&mut out, "  index.typ:{}:{}: {}", line + 1, col + 1, msg);
                         } else {
                             let _ = writeln!(&mut out, "  {msg}");
                         }
@@ -66,64 +61,30 @@ fn format_typst_compile_error(
     std::io::Error::new(std::io::ErrorKind::Other, report)
 }
 
-
-pub fn compile_article(
-    article_dir: &PathBuf,
-    prepend: &Option<PathBuf>,
-    plugins: &[impl AsRef<str>],
+/// Internal compilation kernel. `index_byte_start` is the byte offset within
+/// `full_source` where the user's source begins (plugins/prepend precede it).
+fn compile_source(
+    full_source: &str,
+    index_byte_start: usize,
+    base_dir: &PathBuf,
     include_title: bool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    info!("compiling {} ...", article_dir.display());
-
-    let template_file = article_dir.join("index.typ");
-    let output = article_dir.join("index.html");
-    let outline_file = article_dir.join("outline.html");
-
-    let plugin_block = concat_plugin_sources(plugins)?;
-
-    let user_prepend = if let Some(prepend_file) = prepend {
-        fs::read_to_string(&prepend_file).map_err(|e| {
-            format!(
-                "could not read prepend file {}: {e}",
-                prepend_file.display()
-            )
-        })?
-    } else {
-        fs::read_to_string(article_dir.join("prepend.typ")).unwrap_or_default()
-    };
-
-    let index_source = fs::read_to_string(&template_file).map_err(|e| {
-        format!(
-            "could not read template {}: {e}",
-            template_file.display()
-        )
-    })?;
-
-    let mut template: EcoString = EcoString::new();
-    template.push_str(&plugin_block);
-    if !plugin_block.is_empty() && !user_prepend.is_empty() {
-        template.push('\n');
-    }
-    template.push_str(&user_prepend);
-    let index_byte_start = template.len();
-    template.push_str(&index_source);
-
-    let full_source_str = template.to_string();
+) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+    let index_source = &full_source[index_byte_start..];
 
     let engine = TypstEngine::builder()
-        .main_file(full_source_str.clone())
+        .main_file(full_source.to_string())
         .search_fonts_with(
             TypstKitFontOptions::default()
                 .include_system_fonts(false)
                 .include_embedded_fonts(true),
         )
-        .with_file_system_resolver(article_dir)
+        .with_file_system_resolver(base_dir)
         .build();
 
     let mut doc: HtmlDocument = engine
         .compile()
         .output
-        .map_err(|e| format_typst_compile_error(e, &full_source_str, index_byte_start, &index_source))?;
+        .map_err(|e| format_typst_compile_error(e, full_source, index_byte_start, index_source))?;
 
     let mut outline = EcoString::new();
     let mut curr_level = 1u32;
@@ -139,19 +100,12 @@ pub fn compile_article(
         &mut title_h2_pending,
         &mut first_outline_heading,
     );
-    // `ul_depth` counts open `<ul>` tags; it can diverge from `curr_level - 1` when the first
-    // outline heading uses lazy depth (skip title). Always drain by `ul_depth`, not `curr_level`.
     while ul_depth > 0 {
         ul_depth -= 1;
         outline.push_str("  ".repeat(ul_depth as usize).as_str());
         outline.push_str("</ul>\n");
     }
-    fs::write(&outline_file, outline.as_bytes()).map_err(|e| {
-        format!(
-            "could not write outline {}: {e}",
-            outline_file.display()
-        )
-    })?;
+    let outline_str = outline.to_string();
 
     let mut body: Option<HtmlElement> = None;
     for child in &doc.root.children {
@@ -165,16 +119,11 @@ pub fn compile_article(
     let body = body.ok_or("compiled HTML has no <body> element")?;
     doc.root = body;
 
-    let mut html: String = typst_html::html(&doc).map_err(|e| format!("html generation failed: {e:?}"))?;
+    let mut html: String =
+        typst_html::html(&doc).map_err(|e| format!("html generation failed: {e:?}"))?;
     let lines = html
         .lines()
-        .map(|line| {
-            if line.len() >= 2 {
-                &line[2..]
-            } else {
-                ""
-            }
-        })
+        .map(|line| if line.len() >= 2 { &line[2..] } else { "" })
         .collect::<Vec<&str>>();
 
     if lines.len() > 2 {
@@ -183,12 +132,88 @@ pub fn compile_article(
         html = String::new();
     }
 
-    fs::write(&output, html).map_err(|e| {
-        format!(
-            "could not write output {}: {e}",
-            output.display()
-        )
-    })?;
+    Ok((html, outline_str))
+}
+
+/// Render Typst source directly from a string. Plugins are prepended
+/// automatically. `base_dir` is used by the Typst engine for file-system
+/// resolution (images, includes, etc.). Returns `(index_html, outline_html)`.
+pub fn render_direct(
+    source: &str,
+    plugins: &[impl AsRef<str>],
+    include_title: bool,
+    base_dir: &PathBuf,
+) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+    let plugin_block = concat_plugin_sources(plugins)?;
+
+    let mut full_source = EcoString::new();
+    full_source.push_str(&plugin_block);
+    if !plugin_block.is_empty() {
+        full_source.push('\n');
+    }
+    let index_byte_start = full_source.len();
+    full_source.push_str(source);
+
+    compile_source(
+        full_source.as_str(),
+        index_byte_start,
+        base_dir,
+        include_title,
+    )
+}
+
+/// Render Typst source read from `article_dir/index.typ`. Supports an
+/// optional `prepend` file and writes the output to `index.html` and
+/// `outline.html` in the same directory.
+pub fn compile_article(
+    article_dir: &PathBuf,
+    prepend: &Option<PathBuf>,
+    plugins: &[impl AsRef<str>],
+    include_title: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("compiling {} ...", article_dir.display());
+
+    let output = article_dir.join("index.html");
+    let outline_file = article_dir.join("outline.html");
+
+    let plugin_block = concat_plugin_sources(plugins)?;
+
+    let user_prepend = if let Some(prepend_file) = prepend {
+        fs::read_to_string(prepend_file).map_err(|e| {
+            format!(
+                "could not read prepend file {}: {e}",
+                prepend_file.display()
+            )
+        })?
+    } else {
+        fs::read_to_string(article_dir.join("prepend.typ")).unwrap_or_default()
+    };
+
+    let template_file = article_dir.join("index.typ");
+    let index_source = fs::read_to_string(&template_file)
+        .map_err(|e| format!("could not read template {}: {e}", template_file.display()))?;
+
+    let mut full_source: EcoString = EcoString::new();
+    full_source.push_str(&plugin_block);
+    if !plugin_block.is_empty() && !user_prepend.is_empty() {
+        full_source.push('\n');
+    }
+    full_source.push_str(&user_prepend);
+    let index_byte_start = full_source.len();
+    full_source.push_str(&index_source);
+
+    let (index_html, outline_html) = compile_source(
+        full_source.as_str(),
+        index_byte_start,
+        article_dir,
+        include_title,
+    )?;
+
+    fs::write(&output, index_html)
+        .map_err(|e| format!("could not write output {}: {e}", output.display()))?;
+
+    fs::write(&outline_file, outline_html.as_bytes())
+        .map_err(|e| format!("could not write outline {}: {e}", outline_file.display()))?;
 
     Ok(())
 }
@@ -283,13 +308,7 @@ fn parse_outline(
         *curr_level = level;
 
         outline.push_str("  ".repeat(*ul_depth as usize).as_str());
-        outline.push_str(
-            format!(
-                "<li><a href=\"#{}\">{}</a></li>\n",
-                slug, header_text
-            )
-            .as_str(),
-        );
+        outline.push_str(format!("<li><a href=\"#{}\">{}</a></li>\n", slug, header_text).as_str());
 
         elem.attrs.push(HtmlAttr::intern("id").unwrap(), slug);
         return;

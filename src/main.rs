@@ -2,8 +2,8 @@ use std::env;
 use std::path::PathBuf;
 
 use clap::Parser;
+use log::{error, info};
 use typssg::{compile_all, compile_article};
-use log::{info, error};
 
 #[derive(Parser)]
 struct Args {

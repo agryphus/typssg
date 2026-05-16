@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 
 static PREPENDS_DIR: Dir<'static> = include_dir!("prepends");
 
@@ -40,17 +40,14 @@ pub fn embedded_prepend_source(id: &str) -> Result<String, String> {
     if id.is_empty() {
         return Err("empty plugin id".into());
     }
-    prepends_table()
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| {
-            let known = list_embedded_plugin_ids().join(", ");
-            if known.is_empty() {
-                format!("unknown plugin '{id}' (no embedded prepends in this build)")
-            } else {
-                format!("unknown plugin '{id}' (embedded: {known})")
-            }
-        })
+    prepends_table().get(&id).cloned().ok_or_else(|| {
+        let known = list_embedded_plugin_ids().join(", ");
+        if known.is_empty() {
+            format!("unknown plugin '{id}' (no embedded prepends in this build)")
+        } else {
+            format!("unknown plugin '{id}' (embedded: {known})")
+        }
+    })
 }
 
 pub fn concat_plugin_sources(plugin_ids: &[impl AsRef<str>]) -> Result<String, String> {
