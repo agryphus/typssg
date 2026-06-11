@@ -2,7 +2,7 @@ mod plugin;
 
 use std::fmt::Write;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use plugin::{concat_plugin_sources, embedded_prepend_source, list_embedded_plugin_ids};
 
@@ -11,6 +11,17 @@ use typst::ecow::EcoString;
 use typst::syntax::Source;
 use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstAsLibError, TypstEngine};
 use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode};
+
+fn article_main_vpath(article_dir: &Path, root_dir: &Path) -> String {
+    let article = fs::canonicalize(article_dir).unwrap_or_else(|_| article_dir.to_path_buf());
+    let root = fs::canonicalize(root_dir).unwrap_or_else(|_| root_dir.to_path_buf());
+    let rel = article
+        .strip_prefix(&root)
+        .unwrap_or(article.as_path());
+    rel.join("index.typ")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
 
 fn format_typst_compile_error(
     err: TypstAsLibError,
@@ -66,19 +77,20 @@ fn format_typst_compile_error(
 fn compile_source(
     full_source: &str,
     index_byte_start: usize,
-    base_dir: &PathBuf,
+    vfs_root: &PathBuf,
+    main_vpath: &str,
     include_title: bool,
 ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
     let index_source = &full_source[index_byte_start..];
 
     let engine = TypstEngine::builder()
-        .main_file(full_source.to_string())
+        .main_file((main_vpath, full_source.to_string()))
         .search_fonts_with(
             TypstKitFontOptions::default()
                 .include_system_fonts(false)
                 .include_embedded_fonts(true),
         )
-        .with_file_system_resolver(base_dir)
+        .with_file_system_resolver(vfs_root)
         .build();
 
     let mut doc: HtmlDocument = engine
@@ -158,6 +170,7 @@ pub fn render_direct(
         full_source.as_str(),
         index_byte_start,
         base_dir,
+        "index.typ",
         include_title,
     )
 }
@@ -167,6 +180,7 @@ pub fn render_direct(
 /// `outline.html` in the same directory.
 pub fn compile_article(
     article_dir: &PathBuf,
+    root_dir: &PathBuf,
     prepend: &Option<PathBuf>,
     plugins: &[impl AsRef<str>],
     include_title: bool,
@@ -177,6 +191,7 @@ pub fn compile_article(
     let outline_file = article_dir.join("outline.html");
 
     let plugin_block = concat_plugin_sources(plugins)?;
+    let main_vpath = article_main_vpath(article_dir, root_dir);
 
     let user_prepend = if let Some(prepend_file) = prepend {
         fs::read_to_string(prepend_file).map_err(|e| {
@@ -205,7 +220,8 @@ pub fn compile_article(
     let (index_html, outline_html) = compile_source(
         full_source.as_str(),
         index_byte_start,
-        article_dir,
+        root_dir,
+        &main_vpath,
         include_title,
     )?;
 
@@ -338,15 +354,29 @@ pub fn compile_all(
     plugins: &[impl AsRef<str>],
     include_title_in_outline: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    for entry in fs::read_dir(root_dir)? {
+    info!("compiling all files at dir {:?}", root_dir);
+    let res = compile_all_at(root_dir, root_dir, prepend, plugins, include_title_in_outline);
+    info!("done");
+    return res;
+}
+
+fn compile_all_at(
+    scan_dir: &PathBuf,
+    root_dir: &PathBuf,
+    prepend: &Option<PathBuf>,
+    plugins: &[impl AsRef<str>],
+    include_title_in_outline: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for entry in fs::read_dir(scan_dir)? {
         let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
-            compile_all(&path, prepend, plugins, include_title_in_outline)?;
+            compile_all_at(&path, root_dir, prepend, plugins, include_title_in_outline)?;
         } else if path.file_name().is_some_and(|n| n == "index.typ") {
             let dir = path.parent().unwrap().to_path_buf();
-            if let Err(e) = compile_article(&dir, prepend, plugins, include_title_in_outline) {
+            if let Err(e) = compile_article(&dir, root_dir, prepend, plugins, include_title_in_outline)
+            {
                 error!("{e}");
             }
         }

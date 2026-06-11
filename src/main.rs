@@ -43,6 +43,7 @@ fn main() {
     } else {
         compile_article(
             &args.dir,
+            &args.dir,
             &args.prepend,
             &args.plugin,
             args.include_title_in_outline,
