@@ -6,10 +6,10 @@ use std::path::PathBuf;
 
 pub use plugin::{concat_plugin_sources, embedded_prepend_source, list_embedded_plugin_ids};
 
-use log::info;
+use log::{error, info};
 use typst::ecow::EcoString;
 use typst::syntax::Source;
-use typst_as_lib::{TypstAsLibError, TypstEngine, typst_kit_options::TypstKitFontOptions};
+use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstAsLibError, TypstEngine};
 use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode};
 
 fn format_typst_compile_error(
@@ -346,7 +346,9 @@ pub fn compile_all(
             compile_all(&path, prepend, plugins, include_title_in_outline)?;
         } else if path.file_name().is_some_and(|n| n == "index.typ") {
             let dir = path.parent().unwrap().to_path_buf();
-            compile_article(&dir, prepend, plugins, include_title_in_outline)?;
+            if let Err(e) = compile_article(&dir, prepend, plugins, include_title_in_outline) {
+                error!("{e}");
+            }
         }
     }
 
