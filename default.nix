@@ -16,6 +16,7 @@ rustPlatform.buildRustPackage {
 
   nativeBuildInputs = with pkgs; [
     rust-analyzer
+    cargo-edit
   ];
   buildInputs = [];
 

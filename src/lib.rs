@@ -7,69 +7,136 @@ use std::path::{Path, PathBuf};
 pub use plugin::{concat_plugin_sources, embedded_prepend_source, list_embedded_plugin_ids};
 
 use log::{error, info};
+use typst::diag::{SourceDiagnostic, Warned};
 use typst::ecow::EcoString;
-use typst::syntax::Source;
-use typst_as_lib::{typst_kit_options::TypstKitFontOptions, TypstAsLibError, TypstEngine};
-use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode};
+use typst::foundations::{Datetime, Duration};
+use typst::syntax::{DiagSpanKind, FileId, RootedPath, Source, VirtualPath, VirtualRoot};
+use typst::text::{Font, FontBook};
+use typst::utils::LazyHash;
+use typst::Library;
+use typst::{LibraryExt, World};
+use typst_html::{HtmlAttr, HtmlDocument, HtmlElement, HtmlNode, HtmlOptions};
+
+struct TypssgWorld {
+    library: LazyHash<Library>,
+    book: LazyHash<FontBook>,
+    main_source_id: FileId,
+    main_source: Source,
+    root: PathBuf,
+    fonts: Vec<Font>,
+}
+
+impl World for TypssgWorld {
+    fn library(&self) -> &LazyHash<Library> {
+        &self.library
+    }
+
+    fn book(&self) -> &LazyHash<FontBook> {
+        &self.book
+    }
+
+    fn main(&self) -> FileId {
+        self.main_source_id
+    }
+
+    fn source(&self, id: FileId) -> typst::diag::FileResult<Source> {
+        if id == self.main_source_id {
+            Ok(self.main_source.clone())
+        } else {
+            let path = id.vpath().realize(&self.root).ok();
+            if let Some(path) = path {
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| typst::diag::FileError::from_io(e, &path))?;
+                Ok(Source::new(id, text))
+            } else {
+                Err(typst::diag::FileError::NotFound(self.root.clone()))
+            }
+        }
+    }
+
+    fn file(&self, id: FileId) -> typst::diag::FileResult<typst::foundations::Bytes> {
+        if id == self.main_source_id {
+            Ok(typst::foundations::Bytes::from_string(
+                self.main_source.text().to_owned(),
+            ))
+        } else {
+            let path = id.vpath().realize(&self.root).ok();
+            if let Some(path) = path {
+                let data =
+                    std::fs::read(&path).map_err(|e| typst::diag::FileError::from_io(e, &path))?;
+                Ok(typst::foundations::Bytes::new(data))
+            } else {
+                Err(typst::diag::FileError::NotFound(self.root.clone()))
+            }
+        }
+    }
+
+    fn font(&self, index: usize) -> Option<Font> {
+        self.fonts.get(index).cloned()
+    }
+
+    fn today(&self, offset: Option<Duration>) -> Option<Datetime> {
+        let mut now = time::OffsetDateTime::now_utc();
+        if let Some(offset) = offset {
+            let td: time::Duration = offset.into();
+            now = now.checked_add(td)?;
+        }
+        Datetime::from_ymd(now.year(), now.month() as u8, now.day())
+    }
+}
 
 fn article_main_vpath(article_dir: &Path, root_dir: &Path) -> String {
     let article = fs::canonicalize(article_dir).unwrap_or_else(|_| article_dir.to_path_buf());
     let root = fs::canonicalize(root_dir).unwrap_or_else(|_| root_dir.to_path_buf());
-    let rel = article
-        .strip_prefix(&root)
-        .unwrap_or(article.as_path());
-    rel.join("index.typ")
-        .to_string_lossy()
-        .replace('\\', "/")
+    let rel = article.strip_prefix(&root).unwrap_or(article.as_path());
+    rel.join("index.typ").to_string_lossy().replace('\\', "/")
 }
 
 fn format_typst_compile_error(
-    err: TypstAsLibError,
+    diagnostics: Vec<SourceDiagnostic>,
     full_source: &str,
     index_byte_start: usize,
     index_source: &str,
 ) -> std::io::Error {
-    let report = match err {
-        TypstAsLibError::TypstSource(diagnostics) if !diagnostics.is_empty() => {
-            let combined = Source::detached(full_source);
-            let index_only = Source::detached(index_source);
-            let index_end = index_byte_start.saturating_add(index_source.len());
-            let mut out = String::from("Typst compile failed:\n");
-            for d in diagnostics.iter() {
-                let msg = d.message.as_str();
-                if let Some(range) = combined.range(d.span) {
-                    let byte = range.start;
-                    if byte >= index_byte_start && byte < index_end {
-                        let rel = byte - index_byte_start;
-                        if let Some((line, col)) = index_only.lines().byte_to_line_column(rel) {
-                            let _ =
-                                writeln!(&mut out, "  index.typ:{}:{}: {}", line + 1, col + 1, msg);
-                        } else {
-                            let _ = writeln!(&mut out, "  {msg}");
-                        }
-                    } else if let Some((line, col)) = combined.lines().byte_to_line_column(byte) {
-                        let _ = writeln!(
-                            &mut out,
-                            "  (preamble) line {}:{}: {}",
-                            line + 1,
-                            col + 1,
-                            msg
-                        );
-                    } else {
-                        let _ = writeln!(&mut out, "  {msg}");
-                    }
+    let combined = Source::detached(full_source);
+    let index_only = Source::detached(index_source);
+    let index_end = index_byte_start.saturating_add(index_source.len());
+    let mut out = String::from("Typst compile failed:\n");
+    for d in &diagnostics {
+        let msg = d.message.as_str();
+        let range = match d.span.get() {
+            DiagSpanKind::Number { num, sub_range, .. } => combined.range(num, sub_range),
+            DiagSpanKind::Range { range, .. } => Some(range),
+            DiagSpanKind::Detached => None,
+        };
+        if let Some(range) = range {
+            let byte = range.start;
+            if byte >= index_byte_start && byte < index_end {
+                let rel = byte - index_byte_start;
+                if let Some((line, col)) = index_only.lines().byte_to_line_column(rel) {
+                    let _ = writeln!(&mut out, "  index.typ:{}:{}: {}", line + 1, col + 1, msg);
                 } else {
                     let _ = writeln!(&mut out, "  {msg}");
                 }
-                for hint in d.hints.iter() {
-                    let _ = writeln!(&mut out, "    hint: {}", hint.as_str());
-                }
+            } else if let Some((line, col)) = combined.lines().byte_to_line_column(byte) {
+                let _ = writeln!(
+                    &mut out,
+                    "  (preamble) line {}:{}: {}",
+                    line + 1,
+                    col + 1,
+                    msg
+                );
+            } else {
+                let _ = writeln!(&mut out, "  {msg}");
             }
-            out
+        } else {
+            let _ = writeln!(&mut out, "  {msg}");
         }
-        other => format!("typst compile failed: {other}"),
-    };
-    std::io::Error::new(std::io::ErrorKind::Other, report)
+        for hint in &d.hints {
+            let _ = writeln!(&mut out, "    hint: {}", hint.v.as_str());
+        }
+    }
+    std::io::Error::other(out)
 }
 
 /// Internal compilation kernel. `index_byte_start` is the byte offset within
@@ -83,20 +150,37 @@ fn compile_source(
 ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
     let index_source = &full_source[index_byte_start..];
 
-    let engine = TypstEngine::builder()
-        .main_file((main_vpath, full_source.to_string()))
-        .search_fonts_with(
-            TypstKitFontOptions::default()
-                .include_system_fonts(false)
-                .include_embedded_fonts(true),
-        )
-        .with_file_system_resolver(vfs_root)
-        .build();
+    let main_source_id = RootedPath::new(
+        VirtualRoot::Project,
+        VirtualPath::new(main_vpath).map_err(|_| format!("invalid virtual path: {main_vpath}"))?,
+    )
+    .intern();
+    let mut book = FontBook::new();
+    let mut fonts = Vec::new();
+    for data in typst_assets::fonts() {
+        if let Some(font) = Font::new(typst::foundations::Bytes::new(data), 0) {
+            book.push(font.info().clone());
+            fonts.push(font);
+        }
+    }
 
-    let mut doc: HtmlDocument = engine
-        .compile()
-        .output
-        .map_err(|e| format_typst_compile_error(e, full_source, index_byte_start, index_source))?;
+    let world = TypssgWorld {
+        library: LazyHash::new(
+            Library::builder()
+                .with_features([typst::Feature::Html].into_iter().collect())
+                .build(),
+        ),
+        book: LazyHash::new(book),
+        main_source_id,
+        main_source: Source::new(main_source_id, full_source.to_string()),
+        root: vfs_root.clone(),
+        fonts,
+    };
+
+    let Warned { output, .. } = typst::compile::<HtmlDocument>(&world);
+    let mut doc = output.map_err(|e| {
+        format_typst_compile_error(e.to_vec(), full_source, index_byte_start, index_source)
+    })?;
 
     let mut outline = EcoString::new();
     let mut curr_level = 1u32;
@@ -104,7 +188,7 @@ fn compile_source(
     let mut title_h2_pending = !include_title;
     let mut first_outline_heading = true;
     parse_outline(
-        &mut doc.root,
+        doc.root_mut(),
         &mut outline,
         &mut curr_level,
         &mut ul_depth,
@@ -119,20 +203,24 @@ fn compile_source(
     }
     let outline_str = outline.to_string();
 
-    let mut body: Option<HtmlElement> = None;
-    for child in &doc.root.children {
-        match child {
-            HtmlNode::Element(e) if e.tag.to_string().as_str() == "<body>" => {
-                body = Some(e.clone());
+    let body: HtmlElement = {
+        let mut body: Option<HtmlElement> = None;
+        for child in &doc.root().children {
+            match child {
+                HtmlNode::Element(e) if e.tag.to_string().as_str() == "<body>" => {
+                    body = Some(e.clone());
+                }
+                _ => {}
             }
-            _ => {}
         }
-    }
-    let body = body.ok_or("compiled HTML has no <body> element")?;
-    doc.root = body;
+        body.ok_or("compiled HTML has no <body> element")?
+    };
+
+    *doc.root_mut() = body;
 
     let mut html: String =
-        typst_html::html(&doc).map_err(|e| format!("html generation failed: {e:?}"))?;
+        typst_html::html(&doc, &HtmlOptions { pretty: true })
+            .map_err(|e| format!("html generation failed: {e:?}"))?;
     let lines = html
         .lines()
         .map(|line| if line.len() >= 2 { &line[2..] } else { "" })
@@ -355,7 +443,13 @@ pub fn compile_all(
     include_title_in_outline: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("compiling all files at dir {:?}", root_dir);
-    let res = compile_all_at(root_dir, root_dir, prepend, plugins, include_title_in_outline);
+    let res = compile_all_at(
+        root_dir,
+        root_dir,
+        prepend,
+        plugins,
+        include_title_in_outline,
+    );
     info!("done");
     return res;
 }
@@ -375,7 +469,8 @@ fn compile_all_at(
             compile_all_at(&path, root_dir, prepend, plugins, include_title_in_outline)?;
         } else if path.file_name().is_some_and(|n| n == "index.typ") {
             let dir = path.parent().unwrap().to_path_buf();
-            if let Err(e) = compile_article(&dir, root_dir, prepend, plugins, include_title_in_outline)
+            if let Err(e) =
+                compile_article(&dir, root_dir, prepend, plugins, include_title_in_outline)
             {
                 error!("{e}");
             }
